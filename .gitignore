@@ -1,0 +1,21 @@
+# ---- 编译产物 ----
+/dist/
+/build/*.exe
+/build/*.ico
+
+# ---- 第三方二进制（scrcpy 内核，从官方 release 下载，不入库）----
+/tools/scrcpy-win64-*/
+/tools/*.zip
+
+# ---- 通用 ----
+*.exe
+*.dll
+*.pdb
+*.obj
+*.user
+*.suo
+.vs/
+.idea/
+*.log
+Thumbs.db
+desktop.ini
