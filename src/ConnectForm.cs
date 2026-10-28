@@ -100,8 +100,8 @@ namespace PhoneLink
             gbPair.Controls.Add(hint);
 
             _status = new Label();
-            _status.Location = new Point(12, 358);
-            _status.Size = new Size(320, 32);
+            _status.Location = new Point(12, 348);
+            _status.Size = new Size(320, 46);
             _status.ForeColor = Color.Silver;
             Controls.Add(_status);
 
@@ -230,11 +230,20 @@ namespace PhoneLink
                     SetStatus("读取手机 IP 失败，请确认手机已连 WiFi");
                     return;
                 }
-                // Android 11+ 的「无线调试」端口是随机的，不能假定 5555，只填 IP 让用户补端口
-                _txtWireless.Text = ip + ":";
+
+                // USB 已通，就走最稳的 5555：顺手把手机切到 TCP 模式，IP 和端口一次填好
+                string tcp = Adb.EnableTcpip(usb.Serial, 5555);
+                bool tcpOk = tcp.IndexOf("restarting in TCP mode", StringComparison.OrdinalIgnoreCase) >= 0;
+                _txtWireless.Text = ip + ":5555";
                 _txtWireless.SelectionStart = _txtWireless.Text.Length;
-                SetStatus("已读取手机 IP：" + ip + "。端口填手机「无线调试」页显示的那个"
-                        + "（Android 11+ 是随机 5 位数，不是 5555；老系统或已开过 5555 才填 5555）");
+                if (tcpOk)
+                {
+                    SetStatus("IP " + ip + "，已顺带开好 5555 端口。现在可以拔线，点「用已知 IP 连接」");
+                }
+                else
+                {
+                    SetStatus("读到 IP " + ip + "，但开 5555 端口失败：" + tcp);
+                }
             }
             catch (Exception ex)
             {
@@ -279,10 +288,25 @@ namespace PhoneLink
                     return;
                 }
                 if (endpoint.IndexOf(':') < 0) endpoint += ":5555";
+
+                // 端口留空：USB 还连着就顺手把 5555 打开，别让用户卡在半路
                 if (endpoint.EndsWith(":"))
                 {
-                    SetStatus("端口没填。Android 11+ 去手机「无线调试」页看那个随机端口（5 位数），填成 IP:端口");
-                    return;
+                    DeviceInfo usb = FirstUsbReady();
+                    if (usb == null)
+                    {
+                        SetStatus("端口没填。要么插上数据线让我自动开 5555，要么去手机「无线调试」页抄那个随机端口");
+                        return;
+                    }
+                    string tcp = Adb.EnableTcpip(usb.Serial, 5555);
+                    if (tcp.IndexOf("restarting in TCP mode", StringComparison.OrdinalIgnoreCase) < 0)
+                    {
+                        SetStatus("开启 5555 端口失败：" + tcp);
+                        return;
+                    }
+                    endpoint += "5555";
+                    _txtWireless.Text = endpoint;
+                    System.Threading.Thread.Sleep(800);
                 }
 
                 string output = Adb.Connect(endpoint);
@@ -335,8 +359,8 @@ namespace PhoneLink
                 if (port == "5555")
                 {
                     return "端口拒绝（10061）：手机 " + host + ":5555 上没有程序在监听。"
-                         + "Android 11+ 请用「无线调试」页显示的端口（随机 5 位数，不是 5555）；"
-                         + "要继续用 5555，得先插 USB 连上，点「先开启无线调试端口」";
+                         + "插上数据线再点「连接」，会自动帮你开 5555；"
+                         + "不想插线就去手机「无线调试」页抄那个随机端口填进来";
                 }
                 return "端口拒绝（10061）：手机 " + host + ":" + port + " 上没有程序在监听。"
                      + "确认手机「无线调试」开关是打开的、端口抄的是页面上那个、电脑与手机在同一 WiFi";
