@@ -95,7 +95,7 @@ namespace PhoneLink
             gbPair.Controls.Add(MakeLabel("配对码", 314, 29));
             gbPair.Controls.Add(MakeButton("开始配对", 14, 56, 90, delegate { Pair(); }));
 
-            var hint = MakeLabel("配对成功后，回到上方「无线连接」填手机的 IP 与无线调试端口（通常是 5555 或无线调试页显示的端口）", 110, 62);
+            var hint = MakeLabel("配对成功后，抄手机「无线调试」页显示的 IP 和端口（随机 5 位数）填到上方，别填 5555", 110, 62);
             hint.Size = new Size(300, 32);
             gbPair.Controls.Add(hint);
 
@@ -150,8 +150,37 @@ namespace PhoneLink
                 List<DeviceInfo> devices = Adb.ListDevices();
                 _list.Items.Clear();
                 foreach (DeviceInfo d in devices) _list.Items.Add(d);
-                if (_list.Items.Count > 0) _list.SelectedIndex = 0;
-                SetStatus("检测到 " + devices.Count + " 个设备");
+
+                if (_list.Items.Count == 0)
+                {
+                    SetStatus("没有检测到设备。按顺序查：① 手机「USB 调试」是否已打开（设置→系统→开发者选项）"
+                            + " ② 插线后手机上是否点了「允许 USB 调试」 ③ 数据线是否只支持充电");
+                    return;
+                }
+
+                _list.SelectedIndex = 0;
+
+                int ready = 0, unauthorized = 0, offline = 0;
+                foreach (DeviceInfo d in devices)
+                {
+                    if (d.IsReady) ready++;
+                    else if (d.State == "unauthorized") unauthorized++;
+                    else offline++;
+                }
+
+                if (ready > 0)
+                {
+                    SetStatus("检测到 " + ready + " 个可用设备");
+                }
+                else if (unauthorized > 0)
+                {
+                    SetStatus("设备已识别但未授权：请在手机上点「允许 USB 调试」，建议勾选「一律允许使用这台计算机进行调试」");
+                }
+                else
+                {
+                    SetStatus("检测到 " + devices.Count + " 个设备，状态为 " + devices[0].State
+                            + "。请拔插数据线，或在手机上重新确认调试授权");
+                }
             }
             catch (Exception ex)
             {
@@ -201,8 +230,11 @@ namespace PhoneLink
                     SetStatus("读取手机 IP 失败，请确认手机已连 WiFi");
                     return;
                 }
-                _txtWireless.Text = ip + ":5555";
-                SetStatus("已读取手机 IP：" + ip);
+                // Android 11+ 的「无线调试」端口是随机的，不能假定 5555，只填 IP 让用户补端口
+                _txtWireless.Text = ip + ":";
+                _txtWireless.SelectionStart = _txtWireless.Text.Length;
+                SetStatus("已读取手机 IP：" + ip + "。端口填手机「无线调试」页显示的那个"
+                        + "（Android 11+ 是随机 5 位数，不是 5555；老系统或已开过 5555 才填 5555）");
             }
             catch (Exception ex)
             {
@@ -221,7 +253,14 @@ namespace PhoneLink
                     return;
                 }
                 string output = Adb.EnableTcpip(usb.Serial, 5555);
-                SetStatus("已开启无线调试端口：" + output);
+                if (output.IndexOf("restarting in TCP mode", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    SetStatus("已在手机 5555 端口开启无线调试。现在可以拔掉数据线，点「用已知 IP 连接」");
+                }
+                else
+                {
+                    SetStatus("开启失败：" + output);
+                }
             }
             catch (Exception ex)
             {
@@ -240,14 +279,22 @@ namespace PhoneLink
                     return;
                 }
                 if (endpoint.IndexOf(':') < 0) endpoint += ":5555";
-
-                string output = Adb.Connect(endpoint);
-                SetStatus(output);
-                if (output.IndexOf("connected", StringComparison.OrdinalIgnoreCase) < 0 &&
-                    output.IndexOf("already", StringComparison.OrdinalIgnoreCase) < 0)
+                if (endpoint.EndsWith(":"))
                 {
+                    SetStatus("端口没填。Android 11+ 去手机「无线调试」页看那个随机端口（5 位数），填成 IP:端口");
                     return;
                 }
+
+                string output = Adb.Connect(endpoint);
+                bool ok = output.IndexOf("connected", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                          output.IndexOf("cannot", StringComparison.OrdinalIgnoreCase) < 0 &&
+                          output.IndexOf("failed", StringComparison.OrdinalIgnoreCase) < 0;
+                if (!ok)
+                {
+                    SetStatus(FriendlyConnectError(output, endpoint));
+                    return;
+                }
+                SetStatus(output);
 
                 _cfg.LastWireless = endpoint;
                 _cfg.Save();
@@ -267,6 +314,55 @@ namespace PhoneLink
             {
                 SetStatus("无线连接失败：" + ex.Message);
             }
+        }
+
+        /// <summary>把 adb connect 的原始报错翻成能照着做的提示</summary>
+        static string FriendlyConnectError(string raw, string endpoint)
+        {
+            string host = endpoint;
+            string port = "5555";
+            int idx = endpoint.LastIndexOf(':');
+            if (idx > 0 && idx < endpoint.Length - 1)
+            {
+                host = endpoint.Substring(0, idx);
+                port = endpoint.Substring(idx + 1);
+            }
+
+            if (raw.IndexOf("10061", StringComparison.Ordinal) >= 0 ||
+                raw.IndexOf("refused", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                raw.IndexOf("积极拒绝", StringComparison.Ordinal) >= 0)
+            {
+                if (port == "5555")
+                {
+                    return "端口拒绝（10061）：手机 " + host + ":5555 上没有程序在监听。"
+                         + "Android 11+ 请用「无线调试」页显示的端口（随机 5 位数，不是 5555）；"
+                         + "要继续用 5555，得先插 USB 连上，点「先开启无线调试端口」";
+                }
+                return "端口拒绝（10061）：手机 " + host + ":" + port + " 上没有程序在监听。"
+                     + "确认手机「无线调试」开关是打开的、端口抄的是页面上那个、电脑与手机在同一 WiFi";
+            }
+
+            if (raw.IndexOf("10060", StringComparison.Ordinal) >= 0 ||
+                raw.IndexOf("timeout", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                raw.IndexOf("超时", StringComparison.Ordinal) >= 0)
+            {
+                return "连接超时：" + host + " 完全没响应。多半不是同一网段，或手机/路由器防火墙拦了";
+            }
+
+            if (raw.IndexOf("cannot resolve", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                raw.IndexOf("unknown host", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                raw.IndexOf("名称", StringComparison.Ordinal) >= 0)
+            {
+                return "IP 解析失败：" + host + " 不是有效地址，检查有没有打错";
+            }
+
+            if (raw.IndexOf("10048", StringComparison.Ordinal) >= 0 ||
+                raw.IndexOf("10049", StringComparison.Ordinal) >= 0)
+            {
+                return "本机端口被占用或地址无效：" + endpoint;
+            }
+
+            return string.IsNullOrEmpty(raw) ? ("连接 " + endpoint + " 没有返回结果，重试一次") : raw;
         }
 
         void Pair()
